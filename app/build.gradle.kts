@@ -81,4 +81,14 @@ dependencies {
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion") // Kotlin Extensions
     ksp("androidx.room:room-compiler:$roomVersion") // Annotation Processor
+
+    // --- 6. 데이터 변환 (Gson) ---
+    // 설명: 안면 인식 데이터(FloatArray 리스트)를 DB에 문자열로 저장하기 위해 필수
+    implementation("com.google.code.gson:gson:2.10.1")
+
+    // --- 7. 화면 이동 (Navigation Compose) ---
+    // 설명: [홈(리스트)] <-> [카메라(등록)] 화면을 왔다 갔다 하기 위해 필수
+    implementation("androidx.navigation:navigation-compose:2.8.0")
+
+
 }
