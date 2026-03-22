@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.facedetectionapp"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -97,6 +97,17 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:34.9.0"))
 
     implementation("com.google.firebase:firebase-analytics")
+
+    // 8. API 통신용 (Retrofit & Gson)
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.11.0")
+
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
+
+    // ★ Meta Wearables DAT SDK (2026년 기준 최신 0.5.0 버전)
+    implementation("com.meta.wearable:mwdat-core:0.5.0")
+    implementation("com.meta.wearable:mwdat-camera:0.5.0")
 
 
 }

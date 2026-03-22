@@ -8,10 +8,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.net.Uri
+import android.os.Build
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,16 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowForwardIos
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -58,7 +52,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -68,11 +62,15 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.facedetectionapp.data.OpenAIRepository
 import com.example.facedetectionapp.data.Person
 import com.example.facedetectionapp.data.PersonViewModel
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
@@ -87,25 +85,24 @@ fun CameraScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
     // Room DB 명단
     val registeredPeople by viewModel.allPeople.collectAsState()
 
-    // ★ [수정됨] true로 시작해야 앱 켜자마자 카메라가 뜹니다!
     var isCameraMode by remember { mutableStateOf(true) }
 
     // 팝업 상태
     var showInputDialog by remember { mutableStateOf(false) }
     var showDetailDialog by remember { mutableStateOf<Person?>(null) }
+    var showSummaryConfirmDialog by remember { mutableStateOf(false) }
 
-    // 카메라 변수
+    // 데이터 상태
     var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_FRONT) }
     var faceResults by remember { mutableStateOf<List<FaceResult>>(emptyList()) }
     var currentFrameBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedFaceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRegistrationMode by remember { mutableStateOf(false) }
-
-    // 수정 모드
     var isEditingMode by remember { mutableStateOf(false) }
     var editingPersonId by remember { mutableIntStateOf(-1) }
 
@@ -114,9 +111,19 @@ fun CameraScreen(
     var inputPhone by remember { mutableStateOf("") }
     var inputInfo by remember { mutableStateOf("") }
 
+    var generatedSummary by remember { mutableStateOf("") }
+    var isAILoading by remember { mutableStateOf(false) }
+
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     val classifier = remember { FaceClassifier(context) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+
+    val detector = remember {
+        val fastOptions = FaceDetectorOptions.Builder()
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+            .build()
+        FaceDetection.getClient(fastOptions)
+    }
 
     // --- Helper Functions ---
     fun saveImageToStorage(bitmap: Bitmap, name: String) {
@@ -136,6 +143,7 @@ fun CameraScreen(
         } catch (e: Exception) { null }
     }
 
+    // 1. 주소록 런처
     val contactPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.data?.let { uri ->
@@ -145,20 +153,71 @@ fun CameraScreen(
             }
         }
     }
-    fun openContactPicker() {
-        contactPickerLauncher.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI))
+    fun openContactPicker() { contactPickerLauncher.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)) }
+
+    // 2. 갤러리 이미지 가져오기
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
+                        decoder.isMutableRequired = true
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                }
+
+                val scaledBitmap = Bitmap.createScaledBitmap(bitmap, 600, 600, true)
+
+                val inputImage = InputImage.fromBitmap(scaledBitmap, 0)
+                detector.process(inputImage)
+                    .addOnSuccessListener { faces ->
+                        if (faces.isNotEmpty()) {
+                            val face = faces[0]
+                            val rect = face.boundingBox
+
+                            val safeX = rect.left.coerceAtLeast(0)
+                            val safeY = rect.top.coerceAtLeast(0)
+                            val safeWidth = rect.width().coerceAtMost(scaledBitmap.width - safeX)
+                            val safeHeight = rect.height().coerceAtMost(scaledBitmap.height - safeY)
+
+                            if (safeWidth > 0 && safeHeight > 0) {
+                                val croppedFace = Bitmap.createBitmap(scaledBitmap, safeX, safeY, safeWidth, safeHeight)
+                                selectedFaceBitmap = croppedFace
+
+                                isEditingMode = false
+                                inputName = ""
+                                inputPhone = ""
+                                inputInfo = ""
+                                showInputDialog = true
+                            } else {
+                                Toast.makeText(context, "얼굴 영역을 자를 수 없습니다.", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "사진에서 얼굴을 찾을 수 없습니다.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .addOnFailureListener {
+                        Toast.makeText(context, "얼굴 인식 실패: ${it.message}", Toast.LENGTH_SHORT).show()
+                    }
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "이미 로드 중 오류 발생", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
+    // 뒤로가기
+    BackHandler(enabled = isCameraMode) { isCameraMode = false }
+
     // ======================================================
-    // UI 로직: isCameraMode 값에 따라 화면 전체를 스위칭
+    // UI Layout
     // ======================================================
 
     if (isCameraMode) {
-        // ###################################
-        // [화면 A] 카메라 모드 (메인 홈)
-        // ###################################
-
-        // 카메라 초기화 로직
+        // [화면 A] 카메라 모드
         LaunchedEffect(lensFacing, previewView, registeredPeople) {
             val pView = previewView ?: return@LaunchedEffect
             val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
@@ -168,9 +227,6 @@ fun CameraScreen(
                 val preview = Preview.Builder().build()
                 preview.setSurfaceProvider(pView.surfaceProvider)
                 val imageAnalysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-                val fastOptions = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
-                val detector = FaceDetection.getClient(fastOptions)
-
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                     val mediaImage = imageProxy.image
                     if (mediaImage != null) {
@@ -181,14 +237,12 @@ fun CameraScreen(
                             val rotation = imageProxy.imageInfo.rotationDegrees.toFloat()
                             val rotatedFrame = if (rotation != 0f) rotateBitmap(frameBitmap, rotation) else frameBitmap
                             currentFrameBitmap = rotatedFrame
-
                             for (face in faces) {
                                 val rect = face.boundingBox
                                 val safeX = rect.left.coerceAtLeast(0)
                                 val safeY = rect.top.coerceAtLeast(0)
                                 val safeWidth = rect.width().coerceAtMost(rotatedFrame.width - safeX)
                                 val safeHeight = rect.height().coerceAtMost(rotatedFrame.height - safeY)
-
                                 if (safeWidth > 0 && safeHeight > 0) {
                                     val croppedFace = Bitmap.createBitmap(rotatedFrame, safeX, safeY, safeWidth, safeHeight)
                                     val currentEmbedding = classifier.getFaceEmbedding(croppedFace)
@@ -222,7 +276,7 @@ fun CameraScreen(
             val maxWidthPx = with(density) { maxWidth.toPx() }
             val maxHeightPx = with(density) { maxHeight.toPx() }
 
-            // 터치 등록/수정
+            // 터치 등록
             Box(
                 modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                     detectTapGestures { tapOffset ->
@@ -237,7 +291,6 @@ fun CameraScreen(
                                 val right = if (isFront) maxWidthPx - (rect.left * scaleX) else rect.right * scaleX
                                 val top = rect.top * scaleY
                                 val bottom = rect.bottom * scaleY
-
                                 if (tapOffset.x in left..right && tapOffset.y in top..bottom) {
                                     try {
                                         val safeX = rect.left.coerceAtLeast(0)
@@ -282,7 +335,7 @@ fun CameraScreen(
                     }
                 }
 
-                // AR 정보
+                // 정보 오버레이
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val scaleX = maxWidth.value / 480f; val scaleY = maxHeight.value / 640f
                     val isFront = (lensFacing == CameraSelector.LENS_FACING_FRONT)
@@ -300,14 +353,17 @@ fun CameraScreen(
                     }
                 }
 
-                // [카메라 화면 UI 버튼들]
+                // ======================================
+                // UI 버튼들
+                // ======================================
+
                 // 1. 카메라 전환
                 IconButton(
                     onClick = { lensFacing = if (lensFacing == CameraSelector.LENS_FACING_FRONT) CameraSelector.LENS_FACING_BACK else CameraSelector.LENS_FACING_FRONT },
                     modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).size(50.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
                 ) { Icon(Icons.Filled.Refresh, "Switch", tint = Color.White) }
 
-                // 2. 등록 모드
+                // 2. 우측 하단: 등록 모드 (기본 56dp FAB)
                 FloatingActionButton(
                     onClick = { isRegistrationMode = !isRegistrationMode },
                     containerColor = if (isRegistrationMode) Color.Red else Color(0xFF2196F3),
@@ -315,203 +371,216 @@ fun CameraScreen(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(30.dp)
                 ) { if (isRegistrationMode) Icon(Icons.Filled.Close, "닫기") else Icon(Icons.Filled.Add, "등록") }
 
-                // 3. ★ [명단] 버튼 (누르면 목록 화면으로 전환)
+                // ★ [수정됨] 3. 좌측 하단: 목록 버튼 (둥근 정사각형, + 버튼과 같은 크기)
                 Button(
-                    onClick = { isCameraMode = false }, // 화면 전환!
-                    modifier = Modifier.align(Alignment.BottomStart).padding(30.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.9f), contentColor = Color.Black),
+                    onClick = { isCameraMode = false },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(30.dp)
+                        .size(56.dp), // FAB 사이즈와 동일하게 맞춤
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White.copy(alpha = 0.9f),
+                        contentColor = Color.Black
+                    ),
+                    shape = RoundedCornerShape(16.dp), // + 버튼처럼 둥근 정사각형
+                    contentPadding = PaddingValues(0.dp) // 중앙 정렬을 위해 패딩 제거
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text("목록", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // 4. 중앙 하단: 설문조사 버튼
+                Button(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://forms.gle/mKwcPaDwhtc7o3HG7"))
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter) // 하단 중앙 정렬
+                        .padding(bottom = 30.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFFC107).copy(alpha = 0.9f), // 눈에 띄는 노란색
+                        contentColor = Color.Black
+                    ),
                     shape = RoundedCornerShape(24.dp)
                 ) {
-                    Icon(Icons.Filled.List, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("명단", fontWeight = FontWeight.Bold)
+                    Text("📝 설문 참여", fontWeight = FontWeight.Bold)
                 }
             }
         }
-
     } else {
-        // ###################################
-        // [화면 B] 인맥 명단 리스트 모드
-        // ###################################
-
-        // 목록에서 뒤로가기 누르면 -> 카메라로 복귀
-        BackHandler {
-            isCameraMode = true
-        }
-
-        Scaffold(
-            topBar = {
-                CenterAlignedTopAppBar(
-                    title = { Text("인맥관리비서", fontWeight = FontWeight.Bold, fontSize = 20.sp) },
-                    navigationIcon = {
-                        // 뒤로가기 버튼 (카메라로 복귀)
-                        IconButton(onClick = { isCameraMode = true }) {
-                            Icon(Icons.Filled.CameraAlt, "카메라로 이동")
-                        }
-                    },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                        containerColor = Color.White,
-                        titleContentColor = Color.Black
+        // [화면 B] 명단 리스트 모드
+        BackHandler { isCameraMode = true }
+        Box(modifier = Modifier.fillMaxSize()) {
+            Scaffold(
+                topBar = {
+                    CenterAlignedTopAppBar(
+                        title = { Text("인맥관리비서", fontWeight = FontWeight.Bold) },
+                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.White)
                     )
-                )
-            },
-            floatingActionButton = {
-                // 카메라(AR)로 돌아가는 버튼
-                FloatingActionButton(
-                    onClick = { isCameraMode = true },
-                    containerColor = Color(0xFF2196F3),
-                    contentColor = Color.White
-                ) {
-                    Icon(Icons.Filled.CameraAlt, contentDescription = "AR 카메라 실행")
                 }
-            }
-        ) { padding ->
-            if (registeredPeople.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F5)), contentAlignment = Alignment.Center) {
-                    Text("등록된 인맥이 없습니다.\n카메라 화면에서 + 버튼을 눌러 추가하세요.", color = Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .padding(padding)
-                        .fillMaxSize()
-                        .background(Color(0xFFF5F5F5)),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(registeredPeople) { person ->
-                        Card(
-                            onClick = { showDetailDialog = person },
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            elevation = CardDefaults.cardElevation(4.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(20.dp),
-                                verticalAlignment = Alignment.CenterVertically
+            ) { padding ->
+                if (registeredPeople.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F5)), contentAlignment = Alignment.Center) {
+                        Text("등록된 인맥이 없습니다.\n하단 + 버튼을 눌러 추가하세요.", color = Color.Gray)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.padding(padding).fillMaxSize().background(Color(0xFFF5F5F5)),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(registeredPeople) { person ->
+                            Card(
+                                onClick = { showDetailDialog = person },
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                elevation = CardDefaults.cardElevation(2.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                // 프로필 이미지
-                                val savedImage = loadImageFromStorage(person.name)
-                                if (savedImage != null) {
-                                    Image(
-                                        bitmap = savedImage.asImageBitmap(), contentDescription = null,
-                                        modifier = Modifier.size(64.dp).clip(CircleShape).border(1.dp, Color.LightGray, CircleShape),
-                                        contentScale = ContentScale.Crop
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier.size(64.dp).clip(CircleShape).background(Color(0xFFE0E0E0)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Filled.Person, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    val savedImage = loadImageFromStorage(person.name)
+                                    if (savedImage != null) {
+                                        Image(bitmap = savedImage.asImageBitmap(), contentDescription = null, modifier = Modifier.size(60.dp).clip(CircleShape).border(1.dp, Color.LightGray, CircleShape), contentScale = ContentScale.Crop)
+                                    } else {
+                                        Box(modifier = Modifier.size(60.dp).clip(CircleShape).background(Color.LightGray), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Person, null, tint = Color.White) }
+                                    }
+                                    Spacer(modifier = Modifier.width(16.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(person.name, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                        if (!person.phoneNumber.isNullOrBlank()) Text(person.phoneNumber, color = Color.Gray, fontSize = 14.sp)
+                                        if (person.info.isNotBlank()) Text(person.info.replace("\n", " "), color = Color.DarkGray, fontSize = 13.sp, maxLines = 1)
+                                    }
+                                    IconButton(onClick = {
+                                        val savedImg = loadImageFromStorage(person.name)
+                                        selectedFaceBitmap = savedImg
+                                        isEditingMode = true
+                                        editingPersonId = person.id
+                                        inputName = person.name
+                                        inputPhone = person.phoneNumber ?: ""
+                                        inputInfo = person.info
+                                        showInputDialog = true
+                                    }) {
+                                        Icon(Icons.Filled.Edit, "수정", tint = Color.Gray)
                                     }
                                 }
-                                Spacer(modifier = Modifier.width(20.dp))
-
-                                // 텍스트 정보
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(person.name, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.Black)
-                                    if (!person.phoneNumber.isNullOrBlank()) {
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Filled.Phone, null, modifier = Modifier.size(14.dp), tint = Color.Gray)
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(person.phoneNumber, color = Color.Gray, fontSize = 14.sp)
-                                        }
-                                    }
-                                    if (person.info.isNotBlank()) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            person.info.replace("\n", " "),
-                                            color = Color.DarkGray, fontSize = 14.sp, maxLines = 1,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                    }
-                                }
-                                // 화살표 아이콘
-                                Icon(Icons.Filled.ArrowForwardIos, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
                 }
             }
+
+            // 버튼 배치
+            FloatingActionButton(
+                onClick = { galleryLauncher.launch("image/*") },
+                containerColor = Color(0xFF673AB7),
+                contentColor = Color.White,
+                modifier = Modifier.align(Alignment.BottomStart).padding(30.dp)
+            ) { Icon(Icons.Filled.Add, "등록") }
+
+            FloatingActionButton(
+                onClick = { isCameraMode = true },
+                containerColor = Color(0xFF2196F3),
+                contentColor = Color.White,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(30.dp)
+            ) { Icon(Icons.Filled.CameraAlt, "AR") }
         }
     }
 
-    // ================= [팝업 (상세/입력)] =================
+    // ================= [팝업 영역] =================
 
     // 1. 상세 정보 팝업
     if (showDetailDialog != null) {
         val person = showDetailDialog!!
         Dialog(onDismissRequest = { showDetailDialog = null }) {
-            Surface(shape = RoundedCornerShape(24.dp), color = Color.White, modifier = Modifier.fillMaxWidth().wrapContentHeight()) {
+            Surface(shape = RoundedCornerShape(24.dp), color = Color.White, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
                     val savedImage = loadImageFromStorage(person.name)
-                    if (savedImage != null) {
-                        Image(bitmap = savedImage.asImageBitmap(), contentDescription = null, modifier = Modifier.size(150.dp).clip(RoundedCornerShape(16.dp)).border(2.dp, Color.Gray, RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
-                    } else {
-                        Box(modifier = Modifier.size(150.dp).background(Color.LightGray, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Person, null, tint = Color.White, modifier = Modifier.size(50.dp)) }
-                    }
+                    if (savedImage != null) Image(bitmap = savedImage.asImageBitmap(), contentDescription = null, modifier = Modifier.size(150.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
+                    else Box(modifier = Modifier.size(150.dp).background(Color.LightGray, RoundedCornerShape(16.dp)))
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(person.name, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     if (!person.phoneNumber.isNullOrBlank()) Text(person.phoneNumber, fontSize = 16.sp, color = Color.Gray)
-                    Spacer(modifier = Modifier.height(8.dp)); Divider(); Spacer(modifier = Modifier.height(8.dp))
-                    Text(person.info, fontSize = 16.sp, lineHeight = 24.sp)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(person.info, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(24.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { showDetailDialog = null }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray, contentColor = Color.Black)) { Text("닫기") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { showDetailDialog = null }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)) { Text("닫기", color = Color.Black) }
                         Button(onClick = {
                             File(context.filesDir, "${person.name}.png").delete()
                             viewModel.deletePerson(person)
-                            Toast.makeText(context, "삭제되었습니다.", Toast.LENGTH_SHORT).show()
                             showDetailDialog = null
-                        }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252), contentColor = Color.White)) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.Delete, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("삭제") } }
+                            Toast.makeText(context, "삭제됨", Toast.LENGTH_SHORT).show()
+                        }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("삭제") }
                     }
                 }
             }
         }
     }
 
-    // 2. 입력 팝업
-    if (showInputDialog && selectedFaceBitmap != null) {
+    // 2. 통합 입력 팝업
+    if (showInputDialog) {
         Dialog(onDismissRequest = { showInputDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Surface(modifier = Modifier.fillMaxWidth(0.9f).wrapContentHeight().clip(RoundedCornerShape(24.dp)), color = Color.White) {
-                Column(modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text(if(isEditingMode) "정보 수정" else "신규 인맥 등록", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    Image(bitmap = selectedFaceBitmap!!.asImageBitmap(), contentDescription = "Face", modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)).border(2.dp, Color.Gray, RoundedCornerShape(12.dp)))
+                Column(modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(if(isEditingMode) "정보 수정" else "신규 등록", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+
+                    if (selectedFaceBitmap != null) {
+                        Image(bitmap = selectedFaceBitmap!!.asImageBitmap(), contentDescription = "Face", modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, Color.Gray, RoundedCornerShape(12.dp)))
+                    } else {
+                        Box(modifier = Modifier.size(120.dp).background(Color.LightGray), contentAlignment = Alignment.Center) { Text("No Image") }
+                    }
+
                     OutlinedButton(onClick = { openContactPicker() }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Filled.AccountCircle, null); Spacer(Modifier.width(8.dp)); Text("연락처 가져오기") }
                     OutlinedTextField(value = inputName, onValueChange = { inputName = it }, label = { Text("이름") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = inputPhone, onValueChange = { inputPhone = it }, label = { Text("전화번호") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = inputInfo, onValueChange = { inputInfo = it }, label = { Text("메모 / 직함") }, modifier = Modifier.fillMaxWidth().height(100.dp), singleLine = false)
+
+                    OutlinedTextField(
+                        value = inputInfo,
+                        onValueChange = { inputInfo = it },
+                        label = { Text("메모 / 대화 내용") },
+                        modifier = Modifier.fillMaxWidth().height(150.dp),
+                        singleLine = false,
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                if (inputInfo.isBlank()) {
+                                    Toast.makeText(context, "내용을 먼저 입력하세요!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    isAILoading = true
+                                    scope.launch {
+                                        val summary = withContext(Dispatchers.IO) { OpenAIRepository.summarizeText(inputInfo) }
+                                        generatedSummary = summary
+                                        isAILoading = false
+                                        showSummaryConfirmDialog = true
+                                    }
+                                }
+                            }) {
+                                if (isAILoading) CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Filled.AutoAwesome, "AI 요약 실행", tint = Color(0xFF673AB7))
+                            }
+                        }
+                    )
+                    Text("팁: 통화 내용이나 문자를 붙여넣고 ✨ 버튼을 누르세요.", fontSize = 12.sp, color = Color.Gray)
+
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         OutlinedButton(onClick = { showInputDialog = false }) { Text("취소") }
                         Button(onClick = {
-                            if (inputName.isBlank()) { Toast.makeText(context, "이름을 입력하세요", Toast.LENGTH_SHORT).show(); return@Button }
-                            val embedding = classifier.getFaceEmbedding(selectedFaceBitmap!!)
-                            saveImageToStorage(selectedFaceBitmap!!, inputName)
+                            if (inputName.isBlank()) { Toast.makeText(context, "이름 입력 필수", Toast.LENGTH_SHORT).show(); return@Button }
+
+                            if (selectedFaceBitmap != null) saveImageToStorage(selectedFaceBitmap!!, inputName)
+                            val embeddings = if (selectedFaceBitmap != null) listOf(classifier.getFaceEmbedding(selectedFaceBitmap!!)) else emptyList()
 
                             if (isEditingMode) {
                                 registeredPeople.find { it.id == editingPersonId }?.let { original ->
-                                    val newEmbeddings = original.embeddings.toMutableList().apply { if (size < 5) add(embedding) }
-                                    viewModel.updatePerson(
-                                        original.copy(
-                                            name = inputName,
-                                            info = inputInfo,
-                                            phoneNumber = inputPhone,
-                                            embeddings = newEmbeddings
-                                        )
-                                    )
-                                    Toast.makeText(context, "수정되었습니다.", Toast.LENGTH_SHORT).show()
+                                    val newEmbeddings = if (embeddings.isNotEmpty()) original.embeddings.toMutableList().apply { add(embeddings[0]) } else original.embeddings
+                                    viewModel.updatePerson(original.copy(name = inputName, info = inputInfo, phoneNumber = inputPhone, embeddings = newEmbeddings))
                                 }
                             } else {
-                                viewModel.addPerson(
-                                    name = inputName,
-                                    info = inputInfo,
-                                    phone = inputPhone,
-                                    embeddings = listOf(embedding)
-                                )
-                                Toast.makeText(context, "등록되었습니다!", Toast.LENGTH_SHORT).show()
+                                if (embeddings.isEmpty()) { Toast.makeText(context, "사진이 필요합니다", Toast.LENGTH_SHORT).show(); return@Button }
+                                viewModel.addPerson(name = inputName, info = inputInfo, phone = inputPhone, embeddings = embeddings)
                             }
                             showInputDialog = false; isRegistrationMode = false
                         }) { Text("저장") }
@@ -520,9 +589,35 @@ fun CameraScreen(
             }
         }
     }
+
+    // 3. AI 요약 확인 팝업
+    if (showSummaryConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showSummaryConfirmDialog = false },
+            title = { Text("✨ AI 요약 완료") },
+            text = {
+                Column {
+                    Text("AI가 내용을 다음과 같이 요약했습니다:", fontSize = 14.sp, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(generatedSummary, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("이 내용으로 덮어쓰시겠습니까?", fontSize = 14.sp, color = Color.Red)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    inputInfo = generatedSummary
+                    showSummaryConfirmDialog = false
+                }) { Text("덮어쓰기") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSummaryConfirmDialog = false }) { Text("취소") }
+            }
+        )
+    }
 }
 
-// Helper Functions
+// ... 하단 Helper 함수는 기존과 동일 ...
 @SuppressLint("Range")
 fun getContactInfo(context: Context, contactUri: Uri): Pair<String, String> {
     var name = ""; var phone = ""

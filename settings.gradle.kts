@@ -15,7 +15,20 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
-        mavenCentral()
+        mavenCentral(
+
+        )
+        maven {
+            url = uri("https://maven.pkg.github.com/facebook/meta-wearables-dat-android")
+            credentials {
+                username = "blockchainMania" // 본인 GitHub 아이디 입력
+                password = "REMOVED-GITHUB-TOKEN" // 방금 복사한 토큰 붙여넣기
+            }
+        }
+
+
+
+
     }
 }
 
