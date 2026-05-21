@@ -8,6 +8,13 @@ plugins {
 
 }
 
+val localProperties = java.util.Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        file.inputStream().use { load(it) }
+    }
+}
+
 android {
     namespace = "com.example.facedetectionapp"
     compileSdk = 36
@@ -20,6 +27,11 @@ android {
         versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField(
+            "String",
+            "OPENAI_API_KEY",
+            "\"${System.getenv("OPENAI_API_KEY") ?: localProperties.getProperty("openai_api_key") ?: ""}\""
+        )
     }
 
     buildTypes {
@@ -41,6 +53,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -105,9 +118,14 @@ dependencies {
 
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
 
-    // ★ Meta Wearables DAT SDK (2026년 기준 최신 0.5.0 버전)
+    // ★ Meta Wearables DAT SDK
     implementation("com.meta.wearable:mwdat-core:0.5.0")
     implementation("com.meta.wearable:mwdat-camera:0.5.0")
+
+    // ★ LiveKit WebRTC SDK
+    implementation("io.livekit:livekit-android:2.24.1")
+
+    // WebSocket (OkHttp에 포함됨 — 별도 추가 불필요)
 
 
 }

@@ -1,5 +1,6 @@
 package com.example.facedetectionapp.data
 
+import com.example.facedetectionapp.BuildConfig
 import com.google.gson.annotations.SerializedName
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -32,13 +33,16 @@ interface OpenAIApi {
 
 // 4. 통신 관리자 (Singleton)
 object OpenAIRepository {
-    // ★ 여기에 본인의 OpenAI API 키를 넣으세요! (sk-...)
-    private const val API_KEY = "REMOVED-OPENAI-KEY"
+    private val apiKey: String
+        get() = BuildConfig.OPENAI_API_KEY
 
     private val client = OkHttpClient.Builder()
         .addInterceptor { chain ->
+            if (apiKey.isBlank()) {
+                error("OpenAI API key is not configured. Set openai_api_key in local.properties or OPENAI_API_KEY.")
+            }
             val request = chain.request().newBuilder()
-                .addHeader("Authorization", "Bearer $API_KEY")
+                .addHeader("Authorization", "Bearer $apiKey")
                 .build()
             chain.proceed(request)
         }

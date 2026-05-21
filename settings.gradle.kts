@@ -1,3 +1,10 @@
+val localProperties = java.util.Properties().apply {
+    val file = file("local.properties")
+    if (file.exists()) {
+        file.inputStream().use { load(it) }
+    }
+}
+
 pluginManagement {
     repositories {
         google {
@@ -21,14 +28,15 @@ dependencyResolutionManagement {
         maven {
             url = uri("https://maven.pkg.github.com/facebook/meta-wearables-dat-android")
             credentials {
-                username = "blockchainMania" // 본인 GitHub 아이디 입력
-                password = "REMOVED-GITHUB-TOKEN" // 방금 복사한 토큰 붙여넣기
+                username = System.getenv("GITHUB_ACTOR")
+                    ?: localProperties.getProperty("github_username")
+                    ?: "blockchainMania"
+                password = System.getenv("GITHUB_TOKEN")
+                    ?: localProperties.getProperty("github_token")
+                    ?: ""
             }
         }
-
-
-
-
+        maven { url = uri("https://jitpack.io") }  // LiveKit 의존성
     }
 }
 

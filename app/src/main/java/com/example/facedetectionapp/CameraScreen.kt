@@ -80,6 +80,7 @@ data class FaceResult(val rect: Rect, val name: String, val info: String, val di
 @OptIn(ExperimentalGetImage::class, ExperimentalMaterial3Api::class)
 @Composable
 fun CameraScreen(
+    onNavigateBack: () -> Unit = {},
     viewModel: PersonViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -90,23 +91,11 @@ fun CameraScreen(
     // Room DB 명단
     val registeredPeople by viewModel.allPeople.collectAsState()
 
-    var isCameraMode by remember { mutableStateOf(true) }
-
-    var showGlassesMode by remember { mutableStateOf(false) }
-
-    // 만약 안경 모드가 켜지면, 새로 만든 화면을 보여주고 함수를 끝냅니다.
-    if (showGlassesMode) {
-        GlassesAssistantScreen()
-
-        // 안경 모드에서 '뒤로가기' 누르면 다시 원래 화면으로 돌아오기
-        BackHandler { showGlassesMode = false }
-        return
-    }
-
 
     // 팝업 상태
     var showInputDialog by remember { mutableStateOf(false) }
     var showDetailDialog by remember { mutableStateOf<Person?>(null) }
+    var personToDeleteFromDetail by remember { mutableStateOf<Person?>(null) }
     var showSummaryConfirmDialog by remember { mutableStateOf(false) }
 
     // 데이터 상태
@@ -221,16 +210,11 @@ fun CameraScreen(
         }
     }
 
-    // 뒤로가기
-    BackHandler(enabled = isCameraMode) { isCameraMode = false }
-
     // ======================================================
     // UI Layout
     // ======================================================
 
-    if (isCameraMode) {
-        // [화면 A] 카메라 모드
-        LaunchedEffect(lensFacing, previewView, registeredPeople) {
+    LaunchedEffect(lensFacing, previewView, registeredPeople) {
             val pView = previewView ?: return@LaunchedEffect
             val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
             cameraProviderFuture.addListener({
@@ -347,6 +331,25 @@ fun CameraScreen(
                     }
                 }
 
+                // 등록 모드 안내 오버레이
+                if (isRegistrationMode) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xCC000000))
+                            .padding(vertical = 10.dp)
+                            .align(Alignment.TopCenter),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "👆 화면에 나타난 얼굴을 탭하여 등록하세요",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+
                 // 정보 오버레이
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val scaleX = maxWidth.value / 480f; val scaleY = maxHeight.value / 640f
@@ -383,27 +386,13 @@ fun CameraScreen(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(30.dp)
                 ) { if (isRegistrationMode) Icon(Icons.Filled.Close, "닫기") else Icon(Icons.Filled.Add, "등록") }
 
-                // ★ [수정됨] 3. 좌측 하단: 목록 버튼 (둥근 정사각형, + 버튼과 같은 크기)
-                Button(
-                    onClick = { isCameraMode = false },
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(30.dp)
-                        .size(56.dp), // FAB 사이즈와 동일하게 맞춤
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.9f),
-                        contentColor = Color.Black
-                    ),
-                    shape = RoundedCornerShape(16.dp), // + 버튼처럼 둥근 정사각형
-                    contentPadding = PaddingValues(0.dp) // 중앙 정렬을 위해 패딩 제거
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text("목록", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
+                // 3. 좌측 하단: 갤러리 등록 버튼
+                FloatingActionButton(
+                    onClick = { galleryLauncher.launch("image/*") },
+                    containerColor = Color(0xFF673AB7),
+                    contentColor = Color.White,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(30.dp)
+                ) { Icon(Icons.Filled.Add, "갤러리 등록") }
 
                 // 4. 중앙 하단: 설문조사 버튼
                 Button(
@@ -424,90 +413,33 @@ fun CameraScreen(
                 }
             }
         }
-    } else {
-        // [화면 B] 명단 리스트 모드
-        BackHandler { isCameraMode = true }
-        Box(modifier = Modifier.fillMaxSize()) {
-            Scaffold(
-                topBar = {
-                    CenterAlignedTopAppBar(
-                        title = { Text("인맥관리비서", fontWeight = FontWeight.Bold) },
-                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.White),
-                        actions = {
-                            IconButton(onClick = { showGlassesMode = true }) {
-                                Text("👓", fontSize = 24.sp)
-                            }
-                        }
-                    )
-                }
-            ) { padding ->
-                if (registeredPeople.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F5)), contentAlignment = Alignment.Center) {
-                        Text("등록된 인맥이 없습니다.\n하단 + 버튼을 눌러 추가하세요.", color = Color.Gray)
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.padding(padding).fillMaxSize().background(Color(0xFFF5F5F5)),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(registeredPeople) { person ->
-                            Card(
-                                onClick = { showDetailDialog = person },
-                                colors = CardDefaults.cardColors(containerColor = Color.White),
-                                elevation = CardDefaults.cardElevation(2.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    val savedImage = loadImageFromStorage(person.name)
-                                    if (savedImage != null) {
-                                        Image(bitmap = savedImage.asImageBitmap(), contentDescription = null, modifier = Modifier.size(60.dp).clip(CircleShape).border(1.dp, Color.LightGray, CircleShape), contentScale = ContentScale.Crop)
-                                    } else {
-                                        Box(modifier = Modifier.size(60.dp).clip(CircleShape).background(Color.LightGray), contentAlignment = Alignment.Center) { Icon(Icons.Filled.Person, null, tint = Color.White) }
-                                    }
-                                    Spacer(modifier = Modifier.width(16.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(person.name, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                        if (!person.phoneNumber.isNullOrBlank()) Text(person.phoneNumber, color = Color.Gray, fontSize = 14.sp)
-                                        if (person.info.isNotBlank()) Text(person.info.replace("\n", " "), color = Color.DarkGray, fontSize = 13.sp, maxLines = 1)
-                                    }
-                                    IconButton(onClick = {
-                                        val savedImg = loadImageFromStorage(person.name)
-                                        selectedFaceBitmap = savedImg
-                                        isEditingMode = true
-                                        editingPersonId = person.id
-                                        inputName = person.name
-                                        inputPhone = person.phoneNumber ?: ""
-                                        inputInfo = person.info
-                                        showInputDialog = true
-                                    }) {
-                                        Icon(Icons.Filled.Edit, "수정", tint = Color.Gray)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 버튼 배치
-            FloatingActionButton(
-                onClick = { galleryLauncher.launch("image/*") },
-                containerColor = Color(0xFF673AB7),
-                contentColor = Color.White,
-                modifier = Modifier.align(Alignment.BottomStart).padding(30.dp)
-            ) { Icon(Icons.Filled.Add, "등록") }
-
-            FloatingActionButton(
-                onClick = { isCameraMode = true },
-                containerColor = Color(0xFF2196F3),
-                contentColor = Color.White,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(30.dp)
-            ) { Icon(Icons.Filled.CameraAlt, "AR") }
-        }
-    }
 
     // ================= [팝업 영역] =================
+
+    // 0. 삭제 확인 다이얼로그
+    personToDeleteFromDetail?.let { person ->
+        AlertDialog(
+            onDismissRequest = { personToDeleteFromDetail = null },
+            icon = { Icon(Icons.Filled.Warning, null, tint = Color.Red) },
+            title = { Text("삭제 확인") },
+            text = { Text("${person.name}님의 모든 데이터를 삭제할까요?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        File(context.filesDir, "${person.name}.png").delete()
+                        viewModel.deletePerson(person)
+                        personToDeleteFromDetail = null
+                        showDetailDialog = null
+                        Toast.makeText(context, "${person.name}님이 삭제되었습니다", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) { Text("삭제") }
+            },
+            dismissButton = {
+                TextButton(onClick = { personToDeleteFromDetail = null }) { Text("취소") }
+            }
+        )
+    }
 
     // 1. 상세 정보 팝업
     if (showDetailDialog != null) {
@@ -527,10 +459,7 @@ fun CameraScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { showDetailDialog = null }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)) { Text("닫기", color = Color.Black) }
                         Button(onClick = {
-                            File(context.filesDir, "${person.name}.png").delete()
-                            viewModel.deletePerson(person)
-                            showDetailDialog = null
-                            Toast.makeText(context, "삭제됨", Toast.LENGTH_SHORT).show()
+                            personToDeleteFromDetail = person
                         }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("삭제") }
                     }
                 }
@@ -568,10 +497,15 @@ fun CameraScreen(
                                 } else {
                                     isAILoading = true
                                     scope.launch {
-                                        val summary = withContext(Dispatchers.IO) { OpenAIRepository.summarizeText(inputInfo) }
-                                        generatedSummary = summary
-                                        isAILoading = false
-                                        showSummaryConfirmDialog = true
+                                        try {
+                                            val summary = withContext(Dispatchers.IO) { OpenAIRepository.summarizeText(inputInfo) }
+                                            generatedSummary = summary
+                                            isAILoading = false
+                                            showSummaryConfirmDialog = true
+                                        } catch (e: Exception) {
+                                            isAILoading = false
+                                            Toast.makeText(context, "AI 요약 실패: 네트워크를 확인해주세요", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 }
                             }) {
@@ -589,15 +523,24 @@ fun CameraScreen(
 
                             if (selectedFaceBitmap != null) saveImageToStorage(selectedFaceBitmap!!, inputName)
                             val embeddings = if (selectedFaceBitmap != null) listOf(classifier.getFaceEmbedding(selectedFaceBitmap!!)) else emptyList()
+                            val thumbnail = selectedFaceBitmap?.let { bmp ->
+                                val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, 96, 96, true)
+                                val out = java.io.ByteArrayOutputStream()
+                                scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
+                                out.toByteArray()
+                            }
 
                             if (isEditingMode) {
                                 registeredPeople.find { it.id == editingPersonId }?.let { original ->
                                     val newEmbeddings = if (embeddings.isNotEmpty()) original.embeddings.toMutableList().apply { add(embeddings[0]) } else original.embeddings
-                                    viewModel.updatePerson(original.copy(name = inputName, info = inputInfo, phoneNumber = inputPhone, embeddings = newEmbeddings))
+                                    val newThumbnails = if (thumbnail != null) original.photoThumbnails + thumbnail else original.photoThumbnails
+                                    viewModel.updatePerson(original.copy(name = inputName, info = inputInfo, phoneNumber = inputPhone, embeddings = newEmbeddings, photoThumbnails = newThumbnails))
                                 }
+                                Toast.makeText(context, "✅ ${inputName} 정보가 수정되었습니다", Toast.LENGTH_SHORT).show()
                             } else {
                                 if (embeddings.isEmpty()) { Toast.makeText(context, "사진이 필요합니다", Toast.LENGTH_SHORT).show(); return@Button }
-                                viewModel.addPerson(name = inputName, info = inputInfo, phone = inputPhone, embeddings = embeddings)
+                                viewModel.addPerson(name = inputName, info = inputInfo, phone = inputPhone, embeddings = embeddings, thumbnails = if (thumbnail != null) listOf(thumbnail) else emptyList())
+                                Toast.makeText(context, "✅ ${inputName}님이 등록되었습니다", Toast.LENGTH_SHORT).show()
                             }
                             showInputDialog = false; isRegistrationMode = false
                         }) { Text("저장") }

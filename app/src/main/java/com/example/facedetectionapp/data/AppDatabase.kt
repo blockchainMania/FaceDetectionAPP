@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
 // 1. 사용할 테이블(Person)과 버전(1)을 명시합니다.
-@Database(entities = [Person::class], version = 1, exportSchema = false)
+@Database(entities = [Person::class], version = 2, exportSchema = false)
 // 2. 아까 만든 변환기(Converters)를 여기에 등록해야 벡터 저장이 가능합니다.
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {

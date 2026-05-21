@@ -29,14 +29,22 @@ class PersonViewModel(application: Application) : AndroidViewModel(application) 
     // - UI에서 버튼을 누르면 이 함수가 실행됩니다.
     // - viewModelScope.launch: "별도 작업 스레드(코루틴)"에서 실행합니다.
     //   (메인 화면이 멈추지 않게 백그라운드에서 저장)
-    fun addPerson(name: String, info: String, embeddings: List<FloatArray>, phone: String? = null, email: String? = null) {
+    fun addPerson(
+        name: String,
+        info: String,
+        embeddings: List<FloatArray>,
+        phone: String? = null,
+        email: String? = null,
+        thumbnails: List<ByteArray> = emptyList()
+    ) {
         viewModelScope.launch {
             val newPerson = Person(
                 name = name,
                 info = info,
                 embeddings = embeddings,
                 phoneNumber = phone,
-                email = email
+                email = email,
+                photoThumbnails = thumbnails
             )
             dao.insertPerson(newPerson)
         }

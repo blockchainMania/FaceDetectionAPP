@@ -13,3 +13,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+.claude/
+.cursor/
+.kotlin/errors/
+*.logcat
+*.log
+glasslink.db
+streaming-server/glasslink.db

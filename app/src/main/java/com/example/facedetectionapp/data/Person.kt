@@ -23,6 +23,9 @@ data class Person(
     // 아까 만든 Converters 덕분에 복잡한 얼굴 데이터도 저장이 가능합니다.
     val embeddings: List<FloatArray> = emptyList(),
 
-    // 5. 언제 등록했는지
+    // 5. 얼굴 사진 썸네일 (JPEG 바이트, 96×96)
+    val photoThumbnails: List<ByteArray> = emptyList(),
+
+    // 6. 언제 등록했는지
     val createdAt: Long = System.currentTimeMillis()
 )

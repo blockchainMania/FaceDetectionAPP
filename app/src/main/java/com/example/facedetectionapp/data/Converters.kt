@@ -1,5 +1,6 @@
 package com.example.facedetectionapp.data
 
+import android.util.Base64
 import androidx.room.TypeConverter
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -25,5 +26,20 @@ class Converters {
         return doubleList?.map { list ->
             list.map { it.toFloat() }.toFloatArray()
         } ?: emptyList()
+    }
+
+    @TypeConverter
+    fun fromThumbnailList(value: List<ByteArray>?): String {
+        if (value.isNullOrEmpty()) return "[]"
+        val base64List = value.map { Base64.encodeToString(it, Base64.DEFAULT) }
+        return gson.toJson(base64List)
+    }
+
+    @TypeConverter
+    fun toThumbnailList(value: String): List<ByteArray> {
+        if (value == "[]" || value.isBlank()) return emptyList()
+        val listType = object : TypeToken<List<String>>() {}.type
+        val base64List: List<String> = gson.fromJson(value, listType) ?: return emptyList()
+        return base64List.map { Base64.decode(it, Base64.DEFAULT) }
     }
 }
