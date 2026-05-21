@@ -1,4 +1,6 @@
-val localProperties = java.util.Properties().apply {
+import java.util.Properties
+
+val localProperties = Properties().apply {
     val file = file("local.properties")
     if (file.exists()) {
         file.inputStream().use { load(it) }
